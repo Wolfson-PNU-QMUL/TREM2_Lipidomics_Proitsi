@@ -1,0 +1,168 @@
+# Set working directory
+setwd("~/Desktop/TREM2_LIPIDOMICS/BRAIN/ANNOTATED/")
+
+# Load required libraries
+# If any of these libraries are missing, install them first using install.packages() or BiocManager::install()
+library(Biobase)
+library(GO.db)
+library(BiocManager)
+library(impute)
+library(WGCNA)
+library(reshape)
+library(devtools)
+library(ggplot2)
+library(tidyverse)
+library(dplyr)
+library(plyr)
+library(data.table)
+library(psych)
+library(nlme)
+library(ggpubr)
+library(cowplot)
+library(grid)
+
+# 1. Basic QC: Read in data and check variable names and classes ####
+lipids_un <- read.csv("BRAIN_LIPIDOMICS_UNTARGETED_DEMO_ANNOTATED.MAY2024.csv", header = TRUE)
+dim(lipids_un)
+
+# Check structure and names of data
+str(lipids_un)
+options(max.print = 999999)
+names(lipids_un)
+
+# Extract lipid names
+lipid_names <- colnames(lipids_un[15:113])
+lipid_names  # Should be 99 lipids
+
+# 2. Replace 0s with NAs for lipids and check missingness ####
+lipids_demo <- lipids_un[, 15:113]
+lipids_demo[lipids_demo == 0] <- NA
+
+# Bind back with demographic data
+lipids_demo2 <- cbind(lipids_un[, 1:14], lipids_demo)
+dim(lipids_demo2)
+
+# 3. Removing participants with all missing data ####
+lipids_demo2$allNA <- apply(lipids_demo2[, 15:113], 1, function(x) all(is.na(x)))
+summary(lipids_demo2$allNA)
+
+# Remove participants with all missing lipid data
+lipids_demo2$allNA <- NULL
+dim(lipids_demo2)
+
+# 4. Exclude participants and metabolites with excessive missing data ####
+lipids_demo2_nonNA_ID <- lipids_demo2[, 15:113][rowMeans(is.na(lipids_demo2[, 15:113])) < 0.5, ]
+dim(lipids_demo2_nonNA_ID)
+
+lipids_demo2_nonNA_met <- lipids_demo2[, 15:113][, colMeans(is.na(lipids_demo2[, 15:113])) < 0.2]
+dim(lipids_demo2_nonNA_met)
+
+# Final cleaning
+lipids_demo3 <- cbind(lipids_demo2[, 1:14], lipids_demo2_nonNA_met)
+
+
+# Exclude control participants with TREM2
+lipids_demo <- lipids_demo3[(lipids_demo3$Diagnosis == "AD") | (lipids_demo3$TREM2 == "NO" & lipids_demo3$Diagnosis == "Control"), ]
+dim(lipids_demo)
+
+# Select columns for scaling and imputation
+lipids_only_sc1 <- lipids_demo[, c(13, 15:113)]  # No ID
+
+# 5. Scale dataframe for imputation ####
+lipids_only_sc <- lipids_demo[, 15:113]  # No ID
+lipids_only_sc <- scale(lipids_only_sc, center = TRUE, scale = TRUE)
+lipids_only_sc <- as.data.frame(lipids_only_sc)
+
+# Check column means and SD (mean ~ 0, SD ~ 1)
+colMeans(lipids_only_sc, na.rm = TRUE)
+apply(lipids_only_sc, 2, sd, na.rm = TRUE)
+
+# 6. Perform KNN imputation ####
+library(impute)
+KNN_r <- impute.knn(as.matrix(lipids_only_sc), k = 10)
+KNN_r2 <- as.data.frame(KNN_r$data)
+write.csv(KNN_r2, "BRAIN_LIPIDOMICS_KNN.csv", row.names = FALSE)
+
+# 7. Inverse normal transformation for normal distribution ####
+KNN_r_qn1 <- apply(KNN_r2, 2, function(x) qnorm((rank(x, na.last = "keep") - 0.5) / sum(!is.na(x))))
+KNN_r_qn2 <- as.data.frame(KNN_r_qn1)
+
+# Bind demographics and save processed data
+KNN_r_qn <- cbind(lipids_demo[, 1:14], KNN_r_qn2)
+write.csv(KNN_r_qn, "BRAIN_LIPIDOMICS_QC.1.csv", row.names = FALSE)
+
+# 7.1 Prelim analysis with PCA to identify systematic variation ####
+autoplot(pca_all <- prcomp(KNN_r_qn[, 15:113], center = TRUE, scale. = TRUE), data = KNN_r_qn, col = 'Region', frame = TRUE, frame.type = 'norm')
+autoplot(pca_all <- prcomp(KNN_r_qn[, 15:113], center = TRUE, scale. = TRUE), data = KNN_r_qn, col = 'Diagnosis', frame = TRUE, frame.type = 'norm')
+
+# Summary of PCA
+summary(pca_all)
+
+# Save the first 5 PCs
+all_scores <- data.frame(pca_all$x)[, 1:5]
+KNN_r_qn <- cbind(KNN_r_qn, all_scores)
+
+write.csv(KNN_r_qn, "BRAIN_LIPIDOMICS_QC.2.csv", row.names = FALSE)
+
+# 8. Linear Regression Analyses ####
+# Start analyses for linear regression
+KNN_r_qn <- read.csv("BRAIN_LIPIDOMICS_QC.2.csv")
+lipids_demo <- KNN_r_qn
+
+# Recode Diagnosis and Variant columns
+lipids_demo$Diagnosis <- factor(lipids_demo$Diagnosis, levels = c("Control", "AD"))
+lipids_demo$TREM2_cat2 <- NA
+lipids_demo$TREM2_cat3 <- "TREM2.Other"
+lipids_demo$TREM2_cat3[lipids_demo$TREM2_cat2 == "R47H"] <- "TREM2+"
+
+# Create subsets based on region
+lipids_demo.BA9 <- lipids_demo[lipids_demo$Region == "BA9", ]
+lipids_demo.HC <- lipids_demo[lipids_demo$Region == "EC_HP", ]
+
+# Write the cleaned and processed data
+write.csv(lipids_demo, "BRAIN_LIPIDOMICS_QC.3.csv")
+
+# 8.2. GLS (nlme) Mixed Model Analysis ####
+lipid_names <- colnames(lipids_demo[c(15:113)])
+gls_results <- matrix(NA, nrow = 99, ncol = 69)
+rownames(gls_results) <- lipid_names
+colnames(gls_results) <- c("beta.AD", "L95.AD", "U95.AD", "Pval.AD", 
+                           "beta.Reg", "L95.Reg", "U95.Reg", "Pval.Reg",
+                           "beta.TREM2", "L95.TREM2", "U95.TREM2", "Pval.TREM2",
+                           "Region_AD_p.inter", "beta.AD.TREM2+", "L95.AD.TREM2+", "U95.AD.TREM2+", "Pval.AD.TREM2+")
+
+# Loop through each lipid and perform GLS analysis
+for (i in lipid_names) {
+  tryCatch({
+    # Select lipid data
+    x <- lipids_demo[, i]
+    
+    # Perform GLS models (example for AD, Region, TREM2, etc.)
+    gls1 <- gls(x ~ Diagnosis + Region + PMD + GENDER + AGE + E4, data = lipids_demo,
+                correlation = corSymm(form = ~ as.numeric(Region) | IOPPN.brain.bank.No),
+                weights = varIdent(form = ~1 | Region), na.action = na.omit)
+    sum1 <- summary(gls1)$tTable
+    ci1 <- intervals(gls1, which = "coef")
+    
+    # Extract results
+    AD_marg_p <- sum1[2, 4]
+    AD_marg_b <- ci1$coef[2, 2]
+    AD_marg_l95 <- ci1$coef[2, 1]
+    AD_marg_u95 <- ci1$coef[2, 3]
+    
+    # Store results
+    gls_results[i, 1] <- AD_marg_b
+    gls_results[i, 2] <- AD_marg_l95
+    gls_results[i, 3] <- AD_marg_u95
+    gls_results[i, 4] <- AD_marg_p
+    
+    # Repeat the same for other models (TREM2, Diagnosis x Region interactions, etc.)
+    # Additional models can be added similarly...
+    
+  }, error = function(e) {
+    message(paste("Error processing lipid:", i, "\n", e))
+  })
+}
+
+# Save GLS results to CSV
+write.csv(gls_results, "GLS_Results.csv", row.names = TRUE)
