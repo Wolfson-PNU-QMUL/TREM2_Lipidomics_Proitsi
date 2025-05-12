@@ -1,0 +1,202 @@
+# Loading necessary libraries
+library(WGCNA)
+library(reshape2)
+library(ggplot2)
+
+# ---- Step 1: Preprocessing and QC ----
+
+## 1a/b. Check for Excessive Missing Values and Outliers
+
+# For BA9 data:
+# Check for missing values and outliers in the BA9 dataset
+gsg_BA9 = goodSamplesGenes(data_res.BA9, verbose = 3)
+gsg_BA9$allOK  # TRUE means no issues with the data
+
+# Sample clustering to detect outliers in BA9
+sampleTree_BA9 = hclust(dist(data_res.BA9), method = "average")
+sizeGrWindow(12, 9)
+par(cex = 0.6)
+par(mar = c(0, 4, 2, 0))
+plot(sampleTree_BA9, main = "Sample Clustering to Detect Outliers BA9", 
+     sub = "", xlab = "", cex.lab = 1.5, cex.axis = 1.5, cex.main = 2)
+
+# For HC data:
+# Repeat the same for the HC dataset
+gsg_HC = goodSamplesGenes(data_res.HC, verbose = 3)
+gsg_HC$allOK  # TRUE means no issues with the data
+
+# Sample clustering to detect outliers in HC
+sampleTree_HC = hclust(dist(data_res.HC), method = "average")
+sizeGrWindow(12, 9)
+par(cex = 0.6)
+par(mar = c(0, 4, 2, 0))
+plot(sampleTree_HC, main = "Sample Clustering to Detect Outliers HC", 
+     sub = "", xlab = "", cex.lab = 1.5, cex.axis = 1.5, cex.main = 2)
+
+## 1c. Load Clinical Data for BA9 and HC
+
+# For BA9:
+CovarsToUse_BA9 <- wgcna_lipids_BA9[, c("E4", "Diagnosis", "Diag.TREM2")]
+CovarsToUse_BA9$E4 <- as.numeric(CovarsToUse_BA9$E4)
+CovarsToUse_BA9$Diagnosis <- as.numeric(CovarsToUse_BA9$Diagnosis)
+CovarsToUse_BA9$Diag.TREM2 <- as.numeric(as.factor(CovarsToUse_BA9$Diag.TREM2))
+
+# For HC:
+CovarsToUse_HC <- wgcna_lipids_HC[, c("E4", "Diagnosis", "Diag.TREM2")]
+CovarsToUse_HC$E4 <- as.numeric(CovarsToUse_HC$E4)
+CovarsToUse_HC$Diagnosis <- as.numeric(CovarsToUse_HC$Diagnosis)
+CovarsToUse_HC$Diag.TREM2 <- as.numeric(as.factor(CovarsToUse_HC$Diag.TREM2))
+
+# Create sample dendrogram and heatmap for visualizing sample-clinical trait relationships
+sampleTree2_BA9 = hclust(dist(data_res.BA9), method = "average")
+CovarColors_BA9 = numbers2colors(CovarsToUse_BA9, signed = FALSE)
+plotDendroAndColors(sampleTree2_BA9, CovarColors_BA9, groupLabels = names(CovarsToUse_BA9), 
+                    main = "Sample Dendrogram and Trait Heatmap BA9")
+
+sampleTree2_HC = hclust(dist(data_res.HC), method = "average")
+CovarColors_HC = numbers2colors(CovarsToUse_HC, signed = FALSE)
+plotDendroAndColors(sampleTree2_HC, CovarColors_HC, groupLabels = names(CovarsToUse_HC), 
+                    main = "Sample Dendrogram and Trait Heatmap HC")
+
+# Save the processed data for BA9 and HC for future use
+save(data_res.BA9, CovarsToUse_BA9, file = "dataInput.BA9.RData")
+save(data_res.HC, CovarsToUse_HC, file = "dataInput.HC.RData")
+
+# ---- Step 2: Network Construction ----
+
+## 2a. Choose the Soft-Thresholding Power
+
+# For BA9:
+powers = c(1:20, seq(from = 10, to = 20, by = 2))
+sft_BA9 = pickSoftThreshold(data_res.BA9, powerVector = powers, networkType = "signed", 
+                             corFnc = "bicor", corOptions = list(use = 'p', maxPOutliers = 0.1))
+sft_BA9$powerEstimate  # Recommended soft-thresholding power for BA9
+
+# Plot for BA9
+sizeGrWindow(9, 5)
+par(mfrow = c(1, 2))
+cex1 = 0.8
+plot(sft_BA9$fitIndices[, 1], -sign(sft_BA9$fitIndices[, 3]) * sft_BA9$fitIndices[, 2], 
+     xlab = "Soft Threshold (power)", ylab = "Scale-Free Topology Model Fit (R^2)", 
+     type = "n", main = "Scale Independence BA9")
+text(sft_BA9$fitIndices[, 1], -sign(sft_BA9$fitIndices[, 3]) * sft_BA9$fitIndices[, 2], 
+     labels = powers, cex = cex1, col = "red")
+abline(h = 0.80, col = "red")
+
+# For HC (repeat the same steps):
+sft_HC = pickSoftThreshold(data_res.HC, powerVector = powers, networkType = "signed", 
+                            corFnc = "bicor", corOptions = list(use = 'p', maxPOutliers = 0.1))
+sft_HC$powerEstimate  # Recommended soft-thresholding power for HC
+
+# Plot for HC
+sizeGrWindow(9, 5)
+par(mfrow = c(1, 2))
+plot(sft_HC$fitIndices[, 1], -sign(sft_HC$fitIndices[, 3]) * sft_HC$fitIndices[, 2], 
+     xlab = "Soft Threshold (power)", ylab = "Scale-Free Topology Model Fit (R^2)", 
+     type = "n", main = "Scale Independence HC")
+text(sft_HC$fitIndices[, 1], -sign(sft_HC$fitIndices[, 3]) * sft_HC$fitIndices[, 2], 
+     labels = powers, cex = cex1, col = "red")
+abline(h = 0.80, col = "red")
+
+## 2b. Co-expression Similarity and Adjacency
+
+# For BA9:
+softPower_BA9 = 12  # Use soft-thresholding power determined from earlier
+adjacency_BA9 = adjacency(data_res.BA9, power = softPower_BA9, type = "signed", corFnc = "bicor")
+TOM_BA9 = TOMsimilarity(adjacency_BA9, TOMType = "signed")
+dissTOM_BA9 = 1 - TOM_BA9  # Dissimilarity is 1 - TOM
+
+# For HC:
+softPower_HC = 12  # Use soft-thresholding power determined from earlier
+adjacency_HC = adjacency(data_res.HC, power = softPower_HC, type = "signed", corFnc = "bicor")
+TOM_HC = TOMsimilarity(adjacency_HC, TOMType = "signed")
+dissTOM_HC = 1 - TOM_HC  # Dissimilarity is 1 - TOM
+
+# ---- Step 3: Module Detection ----
+
+## 3a. Identify Modules Using Dynamic Tree Cut
+
+# For BA9:
+geneTree_BA9 = hclust(as.dist(dissTOM_BA9), method = "average")
+dynamicMods_BA9 = cutreeDynamic(dendro = geneTree_BA9, method = "tree", deepSplit = TRUE, minClusterSize = 12)
+dynamicColors_BA9 = labels2colors(dynamicMods_BA9)
+
+# For HC:
+geneTree_HC = hclust(as.dist(dissTOM_HC), method = "average")
+dynamicMods_HC = cutreeDynamic(dendro = geneTree_HC, method = "tree", deepSplit = TRUE, minClusterSize = 12)
+dynamicColors_HC = labels2colors(dynamicMods_HC)
+
+## 3b. Merge Similar Modules Based on Eigengene Dissimilarity
+
+# For BA9:
+MEList_BA9 = moduleEigengenes(data_res.BA9, colors = dynamicColors_BA9)
+MEs_BA9 = MEList_BA9$eigengenes
+MEDiss_BA9 = 1 - cor(MEs_BA9)
+METree_BA9 = hclust(as.dist(MEDiss_BA9), method = "average")
+
+# Set threshold for module merging
+MEDissThres_BA9 = 0.25
+merge_BA9 = mergeCloseModules(data_res.BA9, dynamicColors_BA9, cutHeight = MEDissThres_BA9, verbose = 3)
+mergedColors_BA9 = merge_BA9$colors
+mergedMEs_BA9 = merge_BA9$newMEs
+
+# For HC:
+MEList_HC = moduleEigengenes(data_res.HC, colors = dynamicColors_HC)
+MEs_HC = MEList_HC$eigengenes
+MEDiss_HC = 1 - cor(MEs_HC)
+METree_HC = hclust(as.dist(MEDiss_HC), method = "average")
+
+# Set threshold for module merging
+MEDissThres_HC = 0.25
+merge_HC = mergeCloseModules(data_res.HC, dynamicColors_HC, cutHeight = MEDissThres_HC, verbose = 3)
+mergedColors_HC = merge_HC$colors
+mergedMEs_HC = merge_HC$newMEs
+
+# ---- Step 4: Module-Trait Association ----
+
+## 4a. Quantifying Module-Trait Associations
+
+# For BA9:
+MEs0_BA9 = moduleEigengenes(data_res.BA9, moduleColors_BA9)$eigengenes
+MEs_BA9 = orderMEs(MEs0_BA9)
+
+# For HC:
+MEs0_HC = moduleEigengenes(data_res.HC, moduleColors_HC)$eigengenes
+MEs_HC = orderMEs(MEs0_HC)
+
+# ---- Step 5: Visualization ----
+
+## 5a. Plot Module-Trait Relationships (Boxplots)
+
+# For BA9:
+ME_covarUn_BA9 <- cbind(MEs_BA9, CovarsToUse_BA9)
+ME_melt_BA9 <- melt(ME_covarUn_BA9[, c(1:4, 7)], id.var = "Diagnosis")
+
+# For HC:
+ME_covarUn_HC <- cbind(MEs_HC, CovarsToUse_HC)
+ME_melt_HC <- melt(ME_covarUn_HC[, c(1:4, 7)], id.var = "Diagnosis")
+
+# ---- Step 6: Regression ----
+
+## 6a. Perform Regression Analysis
+
+# For BA9:
+logMod_BA9 <- matrix(data = NA, nrow = length(modNames_BA9), ncol = length(traits_BA9))
+colnames(logMod_BA9) <- colnames(CovarsToUse_BA9)
+for (i in 1:length(modNames_BA9)) {
+  for (j in 1:length(traits_BA9)) {
+    lmRes_BA9 <- lm(MEs_BA9[, i] ~ CovarsToUse_BA9[, j])
+    logMod_BA9[i, j] <- summary(lmRes_BA9)$coefficients[2, 4]  # Extract p-value
+  }
+}
+
+# For HC:
+logMod_HC <- matrix(data = NA, nrow = length(modNames_HC), ncol = length(traits_HC))
+colnames(logMod_HC) <- colnames(CovarsToUse_HC)
+for (i in 1:length(modNames_HC)) {
+  for (j in 1:length(traits_HC)) {
+    lmRes_HC <- lm(MEs_HC[, i] ~ CovarsToUse_HC[, j])
+    logMod_HC[i, j] <- summary(lmRes_HC)$coefficients[2, 4]  # Extract p-value
+  }
+}
+
