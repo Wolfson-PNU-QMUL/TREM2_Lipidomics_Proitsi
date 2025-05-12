@@ -1,0 +1,191 @@
+############################################################
+###################  Module Preservation ################
+############################################################
+
+# This section calculates the module preservation between BA9 and HC regions
+# It compares the preservation of metabolite modules between two brain regions using module preservation statistics.
+
+### 1. Setup and Import Data ###
+
+# Import data for BA9 modules and metabolites
+MM.BA9 <- read.csv("Metab_Module_groups_and MM.BA9.csv")
+colnames(MM.BA9)[1] <- "Metabolite"  # Renaming the first column
+colnames(MM.BA9)[2] <- "Module"  # Renaming the second column
+MM.BA9mm <- MM.BA9[, c(1:2)]  # Select the 'Metabolite' and 'Module' columns
+MM.BA9m <- MM.BA9[, -c(1:2)]  # Remove 'Metabolite' and 'Module' columns (presumably for expression data)
+
+# Import data for HC modules and metabolites
+MM.HC <- read.csv("Metab_Module_groups_and MM.HC.csv")
+colnames(MM.HC)[1] <- "Metabolite"  # Renaming the first column
+colnames(MM.HC)[2] <- "Module"  # Renaming the second column
+MM.HCmm <- MM.HC[, c(1:2)]  # Select the 'Metabolite' and 'Module' columns
+MM.HCm <- MM.HC[, -c(1:2)]  # Remove 'Metabolite' and 'Module' columns (presumably for expression data)
+
+### 2. Expression Data ###
+datExprBA9 <- ResidualsUn.BA9  # Expression data for BA9
+dim(datExprBA9)  # Check the dimensions of the BA9 data
+
+datExprHC <- ResidualsUn.HC  # Expression data for HC
+dim(datExprHC)  # Check the dimensions of the HC data
+
+### 3. Module Color Assignments ###
+colors.BA9 <- MM.BA9mm$Module  # Extract the module assignments for BA9
+table(colors.BA9)  # Check the distribution of modules in BA9
+
+colors.HC <- MM.HCmm$Module  # Extract the module assignments for HC
+table(colors.HC)  # Check the distribution of modules in HC
+
+### 4. Multi-Set Data Setup ###
+setLabels <- c("BA9", "HC")  # Labels for the two datasets
+multiExpr <- list(CBA9 = list(data = datExprBA9), HC = list(data = datExprHC))  # Combine the expression data
+multiColor <- list(BA9 = colors.BA9, HC = colors.HC)  # Combine the module colors
+
+multiExpr <- fixDataStructure(multiExpr)  # Fix data structure for expression data
+multiColor <- fixDataStructure(multiColor)  # Fix data structure for module colors
+
+### 5. Module Preservation Calculation ###
+# This function calculates the module preservation between BA9 and HC using the WGCNA method
+system.time({
+  mp <- modulePreservation(multiExpr, multiColor, networkType = "signed",
+                           referenceNetworks = c(1:2),
+                           nPermutations = 200,
+                           randomSeed = 1,
+                           quickCor = 0,
+                           verbose = 3)
+})
+
+# Save the module preservation results to a file
+save(mp, file = "modulePreservationBA9L-HC.RData")
+
+# Load the saved results
+load(file = "modulePreservationBA9L-HC.RData")
+
+### 6. Analysis and Display of Module Preservation Results ###
+
+# Isolate the observed statistics and their Z scores
+# Using BA9 as the reference dataset (ref = 1, test = 2)
+
+ref <- 1
+test <- 2
+
+statsObs <- cbind(mp$quality$observed[[ref]][[test]][, -1], mp$preservation$observed[[ref]][[test]][, -1])  # Observed stats
+statsZ <- cbind(mp$quality$Z[[ref]][[test]][, -1], mp$preservation$Z[[ref]][[test]][, -1])  # Z-scores
+
+# Output preservation statistics: medianRank and Zsummary
+print(cbind(statsObs[, c("medianRank.pres", "medianRank.qual")],
+            signif(statsZ[, c("Zsummary.pres", "Zsummary.qual")], 2)))
+
+# Plot the preservation medianRank and Zsummary for modules as a function of module size
+modColors <- rownames(mp$preservation$observed[[ref]][[test]])  # Module colors
+moduleSizes <- mp$preservation$Z[[ref]][[test]][, 1]  # Module sizes
+
+# Select which modules to plot (no modules excluded here)
+plotMods <- !(modColors %in% c())  # All modules are included in the plot
+
+# Text labels for points (module names)
+text <- modColors[plotMods]
+
+# Convenience variable for plot data (preservation stats)
+plotData <- cbind(mp$preservation$observed[[ref]][[test]][, 2], mp$preservation$Z[[ref]][[test]][, 2])
+
+# Set plot titles
+mains <- c("Preservation Median rank", "Preservation Zsummary")
+
+# Create the plot
+sizeGrWindow(7, 3)  # Set plot window size
+par(mfrow = c(1, 2))  # Arrange the plots side by side
+par(mar = c(4.5, 4.5, 2.5, 1))  # Set plot margins
+
+# Loop through both preservation statistics for plotting
+for (p in 1:2) {
+  min <- min(plotData[, p], na.rm = TRUE)  # Get minimum value for the plot
+  max <- max(plotData[, p], na.rm = TRUE)  # Get maximum value for the plot
+  
+  # Adjust plotting ranges
+  if (p == 2) {
+    if (min > -max / 10) min <- -max / 10
+    ylim <- c(min - 0.1 * (max - min), max + 0.1 * (max - min))
+  } else {
+    ylim <- c(max + 0.1 * (max - min), min - 0.1 * (max - min))
+  }
+  
+  # Plot the data
+  plot(moduleSizes[plotMods], plotData[plotMods, p], col = 1, bg = modColors[plotMods], pch = 21,
+       main = mains[p], cex = 1, ylab = mains[p], xlab = "Module size", log = "x",
+       ylim = ylim, xlim = c(10, 100), cex.lab = 0.5, cex.axis = 0.5, cex.main = 0.5)
+  
+  # Label points on the plot
+  labelPoints(moduleSizes[plotMods], plotData[plotMods, p], text, cex = 0.5, offs = 0.1)
+  
+  # Add threshold lines for Zsummary plot
+  if (p == 2) {
+    abline(h = 0)
+    abline(h = 2, col = "blue", lty = 2)
+    abline(h = 10, col = "darkgreen", lty = 2)
+  }
+}
+
+# Save the BA9 plot
+my_plot_BA9 <- recordPlot()
+plot.new()
+my_plot_BA9
+
+# Repeat analysis and plotting using HC as the reference (ref = 2, test = 1)
+
+ref <- 2
+test <- 1
+
+# Isolate observed stats and Z-scores for HC
+statsObs <- cbind(mp$quality$observed[[ref]][[test]][, -1], mp$preservation$observed[[ref]][[test]][, -1])
+statsZ <- cbind(mp$quality$Z[[ref]][[test]][, -1], mp$preservation$Z[[ref]][[test]][, -1])
+
+# Output preservation statistics for HC
+print(cbind(statsObs[, c("medianRank.pres", "medianRank.qual")],
+            signif(statsZ[, c("Zsummary.pres", "Zsummary.qual")], 2)))
+
+# Create HC plot
+sizeGrWindow(8, 4)
+par(mfrow = c(1, 2))
+par(mar = c(4.5, 4.5, 2.5, 1))
+
+# Loop through preservation statistics for HC plotting
+for (p in 1:2) {
+  min <- min(plotData[, p], na.rm = TRUE)
+  max <- max(plotData[, p], na.rm = TRUE)
+  
+  if (p == 2) {
+    if (min > -max / 10) min <- -max / 10
+    ylim <- c(min - 0.1 * (max - min), max + 0.1 * (max - min))
+  } else {
+    ylim <- c(max + 0.1 * (max - min), min - 0.1 * (max - min))
+  }
+  
+  plot(moduleSizes[plotMods], plotData[plotMods, p], col = 1, bg = modColors[plotMods], pch = 21,
+       main = mains[p], cex = 1, ylab = mains[p], xlab = "Module size", log = "x",
+       ylim = ylim, xlim = c(10, 100), cex.lab = 0.5, cex.axis = 0.5, cex.main = 0.5)
+  labelPoints(moduleSizes[plotMods], plotData[plotMods, p], text, cex = 0.5, offs = 0.1)
+  
+  if (p == 2) {
+    abline(h = 0)
+    abline(h = 2, col = "blue", lty = 2)
+    abline(h = 10, col = "darkgreen", lty = 2)
+  }
+}
+
+# Save the HC plot
+my_plot_HC <- recordPlot()
+plot.new()
+my_plot_HC
+
+# Combine the BA9 and HC plots into a single figure
+library(cowplot)
+both_regions <- plot_grid(my_plot_BA9, my_plot_HC, nrow = 2, align = 'v', 
+                          labels = c('BA9 reference', 'HC reference'), label_size = 8,
+                          rel_heights = c(0.02, 0.02))
+
+# Display combined plot
+plot.new()
+both_regions
+
+# Save the final plot
+ggsave(both_regions, h = 4, w = 8, file = "Module_preservation_FULL.NEW.pdf", dpi = 600)
